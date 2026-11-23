@@ -43,6 +43,11 @@ def vc_env():
         return json.load(open(cache))
     out = subprocess.run('cmd /c ""%s" x86 >nul && set"' % VCVARS, capture_output=True, text=True, shell=True).stdout
     env = dict(l.split("=", 1) for l in out.splitlines() if "=" in l)
+    # cmd's "set" may print the search path as "Path": normalise it so env["PATH"] works
+    path_keys = [k for k in env if k.upper() == "PATH"]
+    if not path_keys:
+        sys.exit("vcvarsall did not produce an environment: " + VCVARS)
+    env["PATH"] = env.pop(path_keys[0])
     os.makedirs(os.path.dirname(cache), exist_ok=True)
     json.dump(env, open(cache, "w"))
     return env
