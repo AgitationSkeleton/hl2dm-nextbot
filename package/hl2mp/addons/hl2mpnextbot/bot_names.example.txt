@@ -1,0 +1,6 @@
+// hl2mp-nextbot bot names. Copy this file to bot_names.txt (same folder) to use your own names:
+// one name per line, at most 31 characters, lines starting with // are ignored.
+// Without bot_names.txt the built-in TF2 bot names are used.
+// (hl2mpnb_names_file chooses a different path, relative to the game folder.)
+Example Bot One
+Example Bot Two

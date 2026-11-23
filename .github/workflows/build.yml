@@ -1,0 +1,96 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # alliedmodders/hl2sdk branch hl2dm, pinned
+  HL2SDK_REF: 11dca0f12e53089b9dee6511f6b8ff4d02c9d51d
+  # alliedmodders/metamod-source 1.12 release tag (plugin API 16)
+  MMSOURCE_TAG: 1.12.0.1228
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Fetch hl2sdk and Metamod:Source
+        shell: bash
+        run: |
+          git init -q deps/hl2sdk
+          git -C deps/hl2sdk fetch -q --depth 1 https://github.com/alliedmodders/hl2sdk.git "$HL2SDK_REF"
+          git -C deps/hl2sdk checkout -q FETCH_HEAD
+          git clone -q --depth 1 --branch "$MMSOURCE_TAG" https://github.com/alliedmodders/metamod-source.git deps/metamod-source
+      - name: Build hl2mpnextbot.dll (MSVC x86, /MT)
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $env:VCVARS = "$vs\VC\Auxiliary\Build\vcvarsall.bat"
+          $env:HL2SDK = "$pwd\deps\hl2sdk"
+          $env:MMSOURCE = "$pwd\deps\metamod-source"
+          python tools/build.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Check exports
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object FullName -match 'Hostx64\\x86' | Select-Object -First 1
+          $out = & $dumpbin.FullName /nologo /headers /exports build\hl2mpnextbot.dll
+          $out | Select-String 'machine|CreateInterface'
+          if (-not ($out | Select-String 'CreateInterface')) { throw 'CreateInterface not exported' }
+          if (-not ($out | Select-String '14C machine')) { throw 'not an x86 DLL' }
+      - name: Version
+        id: v
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then tag="${GITHUB_REF#refs/tags/}"; version="${tag#v}";
+          else tag=""; version="dev-${GITHUB_SHA::7}"; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Package
+        shell: pwsh
+        run: |
+          $stage = "stage\hl2mp"
+          New-Item -ItemType Directory -Force "$stage\addons\hl2mpnextbot\bin", dist | Out-Null
+          Copy-Item -Recurse -Force package\hl2mp\* $stage
+          Copy-Item build\hl2mpnextbot.dll, build\hl2mpnextbot.pdb "$stage\addons\hl2mpnextbot\bin\"
+          Copy-Item README.md, LICENSE "$stage\addons\hl2mpnextbot\"
+          Copy-Item docs\INSTALL.md "$stage\addons\hl2mpnextbot\"
+          Compress-Archive -Path stage\hl2mp -DestinationPath "dist\hl2dm-nextbot-${{ steps.v.outputs.version }}-windows.zip"
+          Get-ChildItem dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: dist/
+          if-no-files-found: error
+      - name: Publish release
+        if: steps.v.outputs.tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          cat > install.md <<'EOF'
+          Unzip into the HL2DM server's root folder (the zip contains `hl2mp/`). Needs Metamod:Source 1.11/1.12; see `docs/INSTALL.md`.
+          Nav meshes for the stock maps are a separate download (`hl2dm-nextbot-navmeshes-stock.zip`, attached to the first release).
+          EOF
+          if [ -f "docs/releases/$TAG.md" ]; then
+            { cat "docs/releases/$TAG.md"; echo; echo '---'; echo; cat install.md; } > notes.md
+          else
+            cp install.md notes.md
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.zip --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" dist/*.zip --title "$TAG" --notes-file notes.md --target "$GITHUB_SHA"
+          fi

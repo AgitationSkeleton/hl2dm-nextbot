@@ -1,0 +1,5 @@
+"Metamod Plugin"
+{
+	"alias"	"hl2mpnextbot"
+	"file"	"addons/hl2mpnextbot/bin/hl2mpnextbot"
+}
